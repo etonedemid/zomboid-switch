@@ -1,0 +1,1 @@
+{"resources": [{"glob": "stdlib.lbc"}, {"glob": "stdlib.lua"}, {"glob": "serialize.lua"}, {"glob": "META-INF/services/*"}]}

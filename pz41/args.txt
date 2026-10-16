@@ -1,0 +1,10 @@
+@cwd=/game
+/app
+-Xmx1600m
+-verbose:gc
+-Djava.awt.headless=true
+-Dzomboid.steam=0
+-Djava.library.path=/game/natives
+-Dorg.lwjgl.librarypath=/game/natives
+-Dorg.lwjgl.util.Debug=true
+-cachedir=/zomboid

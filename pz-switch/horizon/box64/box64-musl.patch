@@ -1,0 +1,763 @@
+diff --git a/src/custommem.c b/src/custommem.c
+index 87d55778..a202fcc3 100644
+--- a/src/custommem.c
++++ b/src/custommem.c
+@@ -804,12 +804,38 @@ typedef struct mmaplist_s {
+     mmaplist_t*         next;
+ } mmaplist_t;
+ 
++/* pz-switch: generated code lives in a dual-mapped arena (Horizon code memory: the same pages at an RW address and at
++ * an RX address). Box64 writes through the RW view everywhere; only the addresses it jumps to are moved to the RX view,
++ * by box64_jit_delta (constant for the single arena). */
++intptr_t box64_jit_delta;
++void* lx_jit_reserve(size_t size, intptr_t* delta);   /* platform: returns the RW base of a size-byte arena */
++static uint8_t* jit_cur;
++static uint8_t* jit_end;
++static size_t jit_arena;
++static void* jit_mmap(size_t size)
++{
++    if(!jit_cur) {
++        // ponytail: one fixed arena, never returned (LX_JIT_MB, default 96); chain arenas if that proves too small
++        const char* mb = getenv("LX_JIT_MB");
++        jit_arena = (size_t)(mb ? atoi(mb) : 96) << 20;
++        jit_cur = lx_jit_reserve(jit_arena, &box64_jit_delta);
++        if(!jit_cur) return MAP_FAILED;
++        jit_end = jit_cur + jit_arena;
++    }
++    if(jit_cur + size > jit_end) return MAP_FAILED;
++    void* p = jit_cur;
++    jit_cur += size;
++    return p;
++}
++
+ dynablock_t* FindDynablockFromNativeAddress(void* p)
+ {
+     if(!p)
+         return NULL;
+     
+     uintptr_t addr = (uintptr_t)p;
++    if(box64_jit_delta && jit_cur && (uint8_t*)p - box64_jit_delta < jit_end && (uint8_t*)p - box64_jit_delta >= jit_end - jit_arena)
++        p = (uint8_t*)p - box64_jit_delta;   // pz-switch: native PCs are RX addresses, the maps hold RW ones
+ 
+     mapchunk_t* bl = (mapchunk_t*)rb_get_64(rbt_dynmem, (uintptr_t)p);
+     if(bl) {
+@@ -896,7 +922,7 @@ uintptr_t AllocDynarecMap(size_t size)
+             }
+             #endif
+             if(p==MAP_FAILED)
+-                p = internal_mmap(NULL, allocsize, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
++                p = jit_mmap(allocsize);
+             if(p==MAP_FAILED) {
+                 dynarec_log(LOG_INFO, "Cannot create dynamic map of %zu bytes (%s)\n", allocsize, strerror(errno));
+                 return 0;
+diff --git a/src/custommmap.c b/src/custommmap.c
+index 4f506f32..28cbe7bf 100644
+--- a/src/custommmap.c
++++ b/src/custommmap.c
+@@ -33,7 +33,7 @@ void* my_mmap64(x64emu_t* emu, void *addr, unsigned long length, int prot, int f
+ extern int running32bits;
+ extern box64env_t box64env;
+ 
+-EXPORT void* mmap64(void *addr, unsigned long length, int prot, int flags, int fd, ssize_t offset)
++EXPORT void* box64_hook_mmap64(void *addr, unsigned long length, int prot, int flags, int fd, ssize_t offset)
+ {
+     void* ret;
+     if(!addr && ((running32bits && BOX64ENV(mmap32)) || (flags&MAP_32BIT) || box64_is32bits))
+@@ -44,9 +44,9 @@ EXPORT void* mmap64(void *addr, unsigned long length, int prot, int flags, int f
+         setProtection((uintptr_t)ret, length, prot);
+     return ret;
+ }
+-EXPORT void* mmap(void *addr, unsigned long length, int prot, int flags, int fd, ssize_t offset) __attribute__((alias("mmap64")));
++/* pz-switch: no process-wide mmap hooks in a static image */
+ 
+-EXPORT int munmap(void* addr, unsigned long length)
++EXPORT int box64_hook_munmap(void* addr, unsigned long length)
+ {
+     int ret = internal_munmap(addr, length);
+     if(!ret && mapallmem) {
+diff --git a/src/dynarec/dynarec_native.c b/src/dynarec/dynarec_native.c
+index 678f5426..ab80d3a8 100644
+--- a/src/dynarec/dynarec_native.c
++++ b/src/dynarec/dynarec_native.c
+@@ -21,6 +21,7 @@
+ #include "elfloader.h"
+ 
+ #include "dynarec_native.h"
++extern intptr_t box64_jit_delta;
+ #include "dynarec_arch.h"
+ #include "dynarec_next.h"
+ #include "gdbjit.h"
+@@ -579,6 +580,8 @@ void* CreateEmptyBlock(dynablock_t* block, uintptr_t addr, int is32bits) {
+     CreateJmpNext(block->jmpnext, p+2*sizeof(void*));
+     // all done...
+     ClearCache(actual_p+sizeof(void*), 3*sizeof(void*));   // need to clear the cache before execution...
++    block->block += box64_jit_delta;    // pz-switch: execute through the RX view
++    block->jmpnext += box64_jit_delta;
+     return block;
+ }
+ 
+@@ -832,6 +835,8 @@ void* FillBlock64(dynablock_t* block, uintptr_t addr, int alternate, int is32bit
+     *(void**)(next+3*sizeof(void*)) = native_next;
+     CreateJmpNext(block->jmpnext, next+3*sizeof(void*));
+     ClearCache(block->jmpnext, 4*sizeof(void*));
++    block->block += box64_jit_delta;    // pz-switch: execute through the RX view
++    block->jmpnext += box64_jit_delta;
+     //block->x64_addr = (void*)start;
+     block->x64_size = end-start;
+     // all done...
+diff --git a/src/librarian/globalsymbols.c b/src/librarian/globalsymbols.c
+index fb561b6a..c930ba70 100644
+--- a/src/librarian/globalsymbols.c
++++ b/src/librarian/globalsymbols.c
+@@ -1,155 +1,154 @@
+-#define _GNU_SOURCE
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <string.h>
+-#include <dlfcn.h>
+-
+-#include "wrappedlibs.h"
+-
+-#include "debug.h"
+-#include "wrapper.h"
+-#include "bridge.h"
+-#include "callback.h"
+-#include "box64context.h"
+-#include "librarian.h"
+-#include "library.h"
+-
+-// workaround for Globals symbols
+-
+-#define GLOB(A, B) \
+-    if (GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, -1, NULL, 0, NULL)) {  \
+-        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p <- %p\n", (void*)globoffs, &A);              \
+-        memcpy((void*)globoffs, &A, sizeof(A));                                                           \
+-    }                                                                                                     \
+-    if (B && GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, 2, B, 1, NULL)) { \
+-        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p <- %p\n", (void*)globoffs, &A);              \
+-        memcpy((void*)globoffs, &A, sizeof(A));                                                           \
+-    }
+-
+-#define TOGLOB(A, B) \
+-    if (GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, -1, NULL, 0, NULL)) {  \
+-        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p -> %p\n", (void*)globoffs, &A);              \
+-        memcpy(&A, (void*)globoffs, sizeof(A));                                                           \
+-    }                                                                                                     \
+-    if (B && GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, 2, B, 1, NULL)) { \
+-        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p -> %p\n", (void*)globoffs, &A);              \
+-        memcpy(&A, (void*)globoffs, sizeof(A));                                                           \
+-    }
+-
+-
+-// *********** GTK *****************
+-EXPORT void* gdk_display = NULL;   // in case it's used...
+-
+-void my_checkGlobalGdkDisplay()
+-{
+-    uintptr_t globoffs, globend;
+-    GLOB(gdk_display, NULL)
+-}
+-
+-void my_setGlobalGThreadsInit()
+-{
+-    int val = 1;
+-    uintptr_t globoffs, globend;
+-    if (GetGlobalNoWeakSymbolStartEnd(my_context->maplib, "g_threads_got_initialized", &globoffs, &globend, -1, NULL, 0, NULL)) {
+-        printf_log(LOG_DEBUG, "Global g_threads_got_initialized workaround, @%p <= %d\n", (void*)globoffs, val);
+-        memcpy((void*)globoffs, &val, sizeof(val));
+-    }
+-}
+-
+-char* getGDKX11LibName();
+-void** my_GetGTKDisplay()
+-{
+-    if(gdk_display)
+-        return &gdk_display;
+-    
+-    char* name = getGDKX11LibName();
+-    library_t * lib = GetLibInternal(name?name:"libgdk-x11-2.0.so.0");
+-    if(!lib) return &gdk_display;   // mmm, that will crash later probably
+-    void* s = dlsym(GetHandle(lib), "gdk_display");
+-    gdk_display = *(void**)s;
+-    return s;
+-}
+-
+-// **************** NCurses ****************
+-EXPORT int COLS;
+-EXPORT int LINES;
+-EXPORT int TABSIZE;
+-EXPORT void* curscr;
+-EXPORT void* newscr;
+-EXPORT void* stdscr;
+-EXPORT void* acs_map[128];
+-EXPORT void* UP;
+-EXPORT void* BC;
+-EXPORT uint8_t PC;
+-EXPORT uint16_t ospeed;
+-EXPORT void* ttytype;
+-
+-void my_checkGlobalTInfo()
+-{
+-    uintptr_t globoffs, globend;
+-    GLOB(COLS, NULL)
+-    GLOB(LINES, NULL)
+-    GLOB(TABSIZE, NULL)
+-    GLOB(curscr, NULL)
+-    GLOB(newscr, NULL)
+-    GLOB(stdscr, NULL)
+-    GLOB(acs_map, NULL)
+-    GLOB(UP, NULL)
+-    GLOB(BC, NULL)
+-    GLOB(PC, NULL)
+-    GLOB(ospeed, NULL)
+-    GLOB(ttytype, NULL)
+-}
+-
+-void my_updateGlobalTInfo()
+-{
+-    uintptr_t globoffs, globend;
+-    TOGLOB(COLS, NULL)
+-    TOGLOB(LINES, NULL)
+-    TOGLOB(TABSIZE, NULL)
+-    TOGLOB(curscr, NULL)
+-    TOGLOB(newscr, NULL)
+-    TOGLOB(stdscr, NULL)
+-    TOGLOB(acs_map, NULL)
+-    TOGLOB(UP, NULL)
+-    TOGLOB(BC, NULL)
+-    TOGLOB(PC, NULL)
+-    TOGLOB(ospeed, NULL)
+-    TOGLOB(ttytype, NULL)
+-}
+-
+-// **************** getopts ****************
+-EXPORT char *optarg;
+-EXPORT int optind, opterr, optopt;
+-
+-void my_updateGlobalOpt()
+-{
+-    uintptr_t globoffs, globend;
+-    TOGLOB(optarg, "GLIBC_2.2.5");
+-    TOGLOB(optind, "GLIBC_2.2.5");
+-    TOGLOB(opterr, "GLIBC_2.2.5");
+-    TOGLOB(optopt, "GLIBC_2.2.5");
+-}
+-
+-void my_checkGlobalOpt()
+-{
+-    uintptr_t globoffs, globend;
+-    GLOB(optarg, "GLIBC_2.2.5");
+-    GLOB(optind, "GLIBC_2.2.5");
+-    GLOB(opterr, "GLIBC_2.2.5");
+-    GLOB(optopt, "GLIBC_2.2.5");
+-}
+-
+-// **************** libxslt ****************
+-EXPORT int xsltMaxVars;
+-void my_updateGlobalXslt()
+-{
+-    uintptr_t globoffs, globend;
+-    TOGLOB(xsltMaxVars, "LIBXML2_1.0.24");
+-}
+-
+-void my_checkGlobalXslt()
+-{
+-    uintptr_t globoffs, globend;
+-    GLOB(xsltMaxVars, "LIBXML2_1.0.24");
+-}
++#define _GNU_SOURCE
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <dlfcn.h>
++
++#include "wrappedlibs.h"
++
++#include "debug.h"
++#include "wrapper.h"
++#include "bridge.h"
++#include "callback.h"
++#include "box64context.h"
++#include "librarian.h"
++#include "library.h"
++
++// workaround for Globals symbols
++
++#define GLOB(A, B) \
++    if (GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, -1, NULL, 0, NULL)) {  \
++        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p <- %p\n", (void*)globoffs, &A);              \
++        memcpy((void*)globoffs, &A, sizeof(A));                                                           \
++    }                                                                                                     \
++    if (B && GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, 2, B, 1, NULL)) { \
++        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p <- %p\n", (void*)globoffs, &A);              \
++        memcpy((void*)globoffs, &A, sizeof(A));                                                           \
++    }
++
++#define TOGLOB(A, B) \
++    if (GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, -1, NULL, 0, NULL)) {  \
++        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p -> %p\n", (void*)globoffs, &A);              \
++        memcpy(&A, (void*)globoffs, sizeof(A));                                                           \
++    }                                                                                                     \
++    if (B && GetGlobalNoWeakSymbolStartEnd(my_context->maplib, #A, &globoffs, &globend, 2, B, 1, NULL)) { \
++        printf_log(LOG_DEBUG, "Global " #A " workaround, @%p -> %p\n", (void*)globoffs, &A);              \
++        memcpy(&A, (void*)globoffs, sizeof(A));                                                           \
++    }
++
++
++// *********** GTK *****************
++EXPORT void* gdk_display = NULL;   // in case it's used...
++
++void my_checkGlobalGdkDisplay()
++{
++    uintptr_t globoffs, globend;
++    GLOB(gdk_display, NULL)
++}
++
++void my_setGlobalGThreadsInit()
++{
++    int val = 1;
++    uintptr_t globoffs, globend;
++    if (GetGlobalNoWeakSymbolStartEnd(my_context->maplib, "g_threads_got_initialized", &globoffs, &globend, -1, NULL, 0, NULL)) {
++        printf_log(LOG_DEBUG, "Global g_threads_got_initialized workaround, @%p <= %d\n", (void*)globoffs, val);
++        memcpy((void*)globoffs, &val, sizeof(val));
++    }
++}
++
++char* getGDKX11LibName();
++void** my_GetGTKDisplay()
++{
++    if(gdk_display)
++        return &gdk_display;
++    
++    char* name = getGDKX11LibName();
++    library_t * lib = GetLibInternal(name?name:"libgdk-x11-2.0.so.0");
++    if(!lib) return &gdk_display;   // mmm, that will crash later probably
++    void* s = dlsym(GetHandle(lib), "gdk_display");
++    gdk_display = *(void**)s;
++    return s;
++}
++
++// **************** NCurses ****************
++EXPORT int COLS;
++EXPORT int LINES;
++EXPORT int TABSIZE;
++EXPORT void* curscr;
++EXPORT void* newscr;
++EXPORT void* stdscr;
++EXPORT void* acs_map[128];
++EXPORT void* UP;
++EXPORT void* BC;
++EXPORT uint8_t PC;
++EXPORT uint16_t ospeed;
++EXPORT void* ttytype;
++
++void my_checkGlobalTInfo()
++{
++    uintptr_t globoffs, globend;
++    GLOB(COLS, NULL)
++    GLOB(LINES, NULL)
++    GLOB(TABSIZE, NULL)
++    GLOB(curscr, NULL)
++    GLOB(newscr, NULL)
++    GLOB(stdscr, NULL)
++    GLOB(acs_map, NULL)
++    GLOB(UP, NULL)
++    GLOB(BC, NULL)
++    GLOB(PC, NULL)
++    GLOB(ospeed, NULL)
++    GLOB(ttytype, NULL)
++}
++
++void my_updateGlobalTInfo()
++{
++    uintptr_t globoffs, globend;
++    TOGLOB(COLS, NULL)
++    TOGLOB(LINES, NULL)
++    TOGLOB(TABSIZE, NULL)
++    TOGLOB(curscr, NULL)
++    TOGLOB(newscr, NULL)
++    TOGLOB(stdscr, NULL)
++    TOGLOB(acs_map, NULL)
++    TOGLOB(UP, NULL)
++    TOGLOB(BC, NULL)
++    TOGLOB(PC, NULL)
++    TOGLOB(ospeed, NULL)
++    TOGLOB(ttytype, NULL)
++}
++
++// **************** getopts ****************
++#include <unistd.h> /* pz-switch: musl defines the getopt globals */
++
++void my_updateGlobalOpt()
++{
++    uintptr_t globoffs, globend;
++    TOGLOB(optarg, "GLIBC_2.2.5");
++    TOGLOB(optind, "GLIBC_2.2.5");
++    TOGLOB(opterr, "GLIBC_2.2.5");
++    TOGLOB(optopt, "GLIBC_2.2.5");
++}
++
++void my_checkGlobalOpt()
++{
++    uintptr_t globoffs, globend;
++    GLOB(optarg, "GLIBC_2.2.5");
++    GLOB(optind, "GLIBC_2.2.5");
++    GLOB(opterr, "GLIBC_2.2.5");
++    GLOB(optopt, "GLIBC_2.2.5");
++}
++
++// **************** libxslt ****************
++EXPORT int xsltMaxVars;
++void my_updateGlobalXslt()
++{
++    uintptr_t globoffs, globend;
++    TOGLOB(xsltMaxVars, "LIBXML2_1.0.24");
++}
++
++void my_checkGlobalXslt()
++{
++    uintptr_t globoffs, globend;
++    GLOB(xsltMaxVars, "LIBXML2_1.0.24");
++}
+diff --git a/src/libtools/threads.c b/src/libtools/threads.c
+index 046365d2..03d2d85a 100644
+--- a/src/libtools/threads.c
++++ b/src/libtools/threads.c
+@@ -43,8 +43,8 @@ typedef int (*iFli_t)(long unsigned int, int);
+ static vFppp_t real_pthread_cleanup_push_defer = NULL;
+ static vFpi_t real_pthread_cleanup_pop_restore = NULL;
+ static iFppip_t real_pthread_cond_clockwait = NULL;
+-void _pthread_cleanup_push(void* buffer, void* routine, void* arg);	// declare hidden functions
+-void _pthread_cleanup_pop(void* buffer, int exec);
++void box64__pthread_cleanup_push(void* buffer, void* routine, void* arg);	// declare hidden functions
++void box64__pthread_cleanup_pop(void* buffer, int exec);
+ // with glibc 2.34+, pthread_kill changed behaviour and might break some program, so using old version if possible
+ // it will be pthread_kill@GLIBC_2.17 on aarch64, but it's GLIBC_2.2.5 on x86_64
+ static iFli_t real_phtread_kill_old = NULL;
+@@ -844,8 +844,8 @@ EXPORT int my_pthread_kill_old(x64emu_t* emu, void* thread, int sig)
+ {
+     // check for old "is everything ok?"
+     if((thread==NULL) && (sig==0))
+-        return real_phtread_kill_old(pthread_self(), 0);
+-    return real_phtread_kill_old((pthread_t)thread, sig);
++        return real_phtread_kill_old((unsigned long)pthread_self(), 0);
++    return real_phtread_kill_old((unsigned long)thread, sig);
+ }
+ 
+ //EXPORT void my_pthread_exit(x64emu_t* emu, void* retval)
+@@ -1242,3 +1242,22 @@ int checkUnlockMutex(void* m)
+ 	}
+ 	return 0;
+ }
++
++/* pz-switch: on a musl host, x86 glibc's static mutex initializers don't mean the same thing (glibc keeps the kind at
++ * byte 16, musl the type at byte 0; the type numbers agree). Convert a still-pristine static initializer in place the
++ * first time the mutex is used. Dynamically initialised mutexes already use the host layout (my_pthread_mutex_init). */
++static void fix_static_mutex(pthread_mutex_t* m)
++{
++	int* w = (int*)m;
++	if(w[0]==0 && w[1]==0 && w[2]==0 && w[3]==0 && w[4]>0 && w[4]<4) {
++		__atomic_store_n(&w[0], w[4], __ATOMIC_RELAXED);
++		__atomic_store_n(&w[4], 0, __ATOMIC_RELEASE);
++	}
++}
++EXPORT int my_pthread_mutex_lock(x64emu_t* emu, pthread_mutex_t* m) { (void)emu; fix_static_mutex(m); return pthread_mutex_lock(m); }
++EXPORT int my_pthread_mutex_trylock(x64emu_t* emu, pthread_mutex_t* m) { (void)emu; fix_static_mutex(m); return pthread_mutex_trylock(m); }
++EXPORT int my_pthread_mutex_unlock(x64emu_t* emu, pthread_mutex_t* m) { (void)emu; fix_static_mutex(m); return pthread_mutex_unlock(m); }
++EXPORT int my_pthread_mutex_timedlock(x64emu_t* emu, pthread_mutex_t* m, void* t) { (void)emu; fix_static_mutex(m); return pthread_mutex_timedlock(m, t); }
++EXPORT int my___pthread_mutex_lock(x64emu_t* emu, pthread_mutex_t* m) __attribute__((alias("my_pthread_mutex_lock")));
++EXPORT int my___pthread_mutex_unlock(x64emu_t* emu, pthread_mutex_t* m) __attribute__((alias("my_pthread_mutex_unlock")));
++EXPORT int my___pthread_mutex_trylock(x64emu_t* emu, pthread_mutex_t* m) __attribute__((alias("my_pthread_mutex_trylock")));
+diff --git a/src/tools/env.c b/src/tools/env.c
+index 93723603..d470e82b 100644
+--- a/src/tools/env.c
++++ b/src/tools/env.c
+@@ -243,7 +243,7 @@ static void pushNewEntry(const char* name, box64env_t* env, int gen)
+     memcpy(p, env, sizeof(box64env_t));
+ }
+ 
+-#ifdef ANDROID
++#if 0 /* pz-switch: musl has shm_open */
+ static int shm_open(const char *name, int oflag, mode_t mode) {
+     return -1;
+ }
+diff --git a/src/wrapped/generated/functions_list.txt b/src/wrapped/generated/functions_list.txt
+index d769031c..2d6c69ca 100644
+--- a/src/wrapped/generated/functions_list.txt
++++ b/src/wrapped/generated/functions_list.txt
+@@ -3797,6 +3797,8 @@ wrappedfmod:
+ - uFpppppppi:
+   - FMOD_System_SetFileSystem
+ wrappedfmodstudio:
++- uFpu:
++  - _ZN4FMOD6Studio6System6createEPPS1_j
+ wrappedfontconfig:
+ - pFpV:
+   - FcObjectSetBuild
+@@ -4564,6 +4566,10 @@ wrappedlibc:
+   - _setjmp
+   - atexit
+   - getcontext
++  - pthread_attr_destroy
++  - pthread_mutex_lock
++  - pthread_mutex_trylock
++  - pthread_mutex_unlock
+   - register_printf_type
+   - setcontext
+   - setjmp
+@@ -4619,13 +4625,18 @@ wrappedlibc:
+   - sigsetjmp
+ - iFpL:
+   - munmap
++  - pthread_attr_setstacksize
+ - iFpp:
++  - __pthread_key_create
+   - __vprintf_chk
+   - dl_iterate_phdr
+   - execv
+   - execvp
+   - lstat
+   - lstat64
++  - pthread_cond_wait
++  - pthread_key_create
++  - pthread_once
+   - sigaltstack
+   - stat
+   - stat64
+@@ -4711,6 +4722,7 @@ wrappedlibc:
+   - __vsscanf
+   - execve
+   - execvpe
++  - pthread_cond_timedwait
+ - iFppV:
+   - __asprintf
+   - __isoc23_sscanf
+@@ -4810,6 +4822,7 @@ wrappedlibc:
+ - iFpppp:
+   - __register_atfork
+   - __vsprintf_chk
++  - pthread_create
+   - scandir
+   - scandir64
+ - lFippL:
+@@ -5204,6 +5217,9 @@ wrappedlibpthread:
+ - iFL:
+   - pthread_key_delete
+ - iFp:
++  - __pthread_mutex_lock
++  - __pthread_mutex_trylock
++  - __pthread_mutex_unlock
+   - __pthread_mutexattr_destroy
+   - __pthread_mutexattr_init
+   - pthread_attr_destroy
+@@ -5219,6 +5235,9 @@ wrappedlibpthread:
+   - pthread_condattr_destroy
+   - pthread_condattr_init
+   - pthread_getattr_default_np
++  - pthread_mutex_lock
++  - pthread_mutex_trylock
++  - pthread_mutex_unlock
+   - pthread_mutexattr_destroy
+   - pthread_mutexattr_init
+   - pthread_setattr_default_np
+@@ -5271,6 +5290,7 @@ wrappedlibpthread:
+   - pthread_getaffinity_np@GLIBC_2.3.3
+   - pthread_key_create
+   - pthread_mutex_init
++  - pthread_mutex_timedlock
+   - pthread_mutexattr_getkind_np
+   - pthread_mutexattr_getprotocol
+   - pthread_mutexattr_getrobust
+diff --git a/src/wrapped/generated/wrappedfmodstudiotypes.h b/src/wrapped/generated/wrappedfmodstudiotypes.h
+index 261d43af..7504a414 100644
+--- a/src/wrapped/generated/wrappedfmodstudiotypes.h
++++ b/src/wrapped/generated/wrappedfmodstudiotypes.h
+@@ -11,7 +11,9 @@
+ #define ADDED_FUNCTIONS() 
+ #endif
+ 
++typedef uint32_t (*uFpu_t)(void*, uint32_t);
+ 
+-#define SUPER() ADDED_FUNCTIONS()
++#define SUPER() ADDED_FUNCTIONS() \
++	GO(_ZN4FMOD6Studio6System6createEPPS1_j, uFpu_t)
+ 
+ #endif // __wrappedfmodstudioTYPES_H_
+diff --git a/src/wrapped/generated/wrappedlibctypes.h b/src/wrapped/generated/wrappedlibctypes.h
+index 6fe99f0e..ebe4766d 100644
+--- a/src/wrapped/generated/wrappedlibctypes.h
++++ b/src/wrapped/generated/wrappedlibctypes.h
+@@ -127,6 +127,10 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
+ 	GO(_setjmp, iFp_t) \
+ 	GO(atexit, iFp_t) \
+ 	GO(getcontext, iFp_t) \
++	GO(pthread_attr_destroy, iFp_t) \
++	GO(pthread_mutex_lock, iFp_t) \
++	GO(pthread_mutex_trylock, iFp_t) \
++	GO(pthread_mutex_unlock, iFp_t) \
+ 	GO(register_printf_type, iFp_t) \
+ 	GO(setcontext, iFp_t) \
+ 	GO(setjmp, iFp_t) \
+@@ -165,12 +169,17 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
+ 	GO(backtrace, iFpi_t) \
+ 	GO(sigsetjmp, iFpi_t) \
+ 	GO(munmap, iFpL_t) \
++	GO(pthread_attr_setstacksize, iFpL_t) \
++	GO(__pthread_key_create, iFpp_t) \
+ 	GO(__vprintf_chk, iFpp_t) \
+ 	GO(dl_iterate_phdr, iFpp_t) \
+ 	GO(execv, iFpp_t) \
+ 	GO(execvp, iFpp_t) \
+ 	GO(lstat, iFpp_t) \
+ 	GO(lstat64, iFpp_t) \
++	GO(pthread_cond_wait, iFpp_t) \
++	GO(pthread_key_create, iFpp_t) \
++	GO(pthread_once, iFpp_t) \
+ 	GO(sigaltstack, iFpp_t) \
+ 	GO(stat, iFpp_t) \
+ 	GO(stat64, iFpp_t) \
+@@ -236,6 +245,7 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
+ 	GO(__vsscanf, iFppp_t) \
+ 	GO(execve, iFppp_t) \
+ 	GO(execvpe, iFppp_t) \
++	GO(pthread_cond_timedwait, iFppp_t) \
+ 	GO(__asprintf, iFppV_t) \
+ 	GO(__isoc23_sscanf, iFppV_t) \
+ 	GO(__isoc99_fscanf, iFppV_t) \
+@@ -305,6 +315,7 @@ typedef int32_t (*iFppipppp_t)(void*, void*, int32_t, void*, void*, void*, void*
+ 	GO(nftw64, iFppii_t) \
+ 	GO(__register_atfork, iFpppp_t) \
+ 	GO(__vsprintf_chk, iFpppp_t) \
++	GO(pthread_create, iFpppp_t) \
+ 	GO(scandir, iFpppp_t) \
+ 	GO(scandir64, iFpppp_t) \
+ 	GO(readlinkat, lFippL_t) \
+diff --git a/src/wrapped/generated/wrappedlibpthreadtypes.h b/src/wrapped/generated/wrappedlibpthreadtypes.h
+index 2620f07e..ac1feb68 100644
+--- a/src/wrapped/generated/wrappedlibpthreadtypes.h
++++ b/src/wrapped/generated/wrappedlibpthreadtypes.h
+@@ -32,6 +32,9 @@ typedef int32_t (*iFpppp_t)(void*, void*, void*, void*);
+ 	GO(__pthread_unregister_cancel, vFp_t) \
+ 	GO(__pthread_unwind_next, vFp_t) \
+ 	GO(pthread_key_delete, iFL_t) \
++	GO(__pthread_mutex_lock, iFp_t) \
++	GO(__pthread_mutex_trylock, iFp_t) \
++	GO(__pthread_mutex_unlock, iFp_t) \
+ 	GO(__pthread_mutexattr_destroy, iFp_t) \
+ 	GO(__pthread_mutexattr_init, iFp_t) \
+ 	GO(pthread_attr_destroy, iFp_t) \
+@@ -47,6 +50,9 @@ typedef int32_t (*iFpppp_t)(void*, void*, void*, void*);
+ 	GO(pthread_condattr_destroy, iFp_t) \
+ 	GO(pthread_condattr_init, iFp_t) \
+ 	GO(pthread_getattr_default_np, iFp_t) \
++	GO(pthread_mutex_lock, iFp_t) \
++	GO(pthread_mutex_trylock, iFp_t) \
++	GO(pthread_mutex_unlock, iFp_t) \
+ 	GO(pthread_mutexattr_destroy, iFp_t) \
+ 	GO(pthread_mutexattr_init, iFp_t) \
+ 	GO(pthread_setattr_default_np, iFp_t) \
+@@ -94,6 +100,7 @@ typedef int32_t (*iFpppp_t)(void*, void*, void*, void*);
+ 	GO(pthread_getaffinity_np@GLIBC_2.3.3, iFpp_t) \
+ 	GO(pthread_key_create, iFpp_t) \
+ 	GO(pthread_mutex_init, iFpp_t) \
++	GO(pthread_mutex_timedlock, iFpp_t) \
+ 	GO(pthread_mutexattr_getkind_np, iFpp_t) \
+ 	GO(pthread_mutexattr_getprotocol, iFpp_t) \
+ 	GO(pthread_mutexattr_getrobust, iFpp_t) \
+diff --git a/src/wrapped/wrappedlibc.c b/src/wrapped/wrappedlibc.c
+index 5771eb4e..a91fc85b 100644
+--- a/src/wrapped/wrappedlibc.c
++++ b/src/wrapped/wrappedlibc.c
+@@ -1486,7 +1486,7 @@ static void qsort_r_helper(void* base, size_t size, __compar_d_fn_t compar, void
+     }
+ }
+ 
+-static void qsort_r(void* base, size_t nmemb, size_t size, __compar_d_fn_t compar, void* arg)
++static void box64_qsort_r(void* base, size_t nmemb, size_t size, __compar_d_fn_t compar, void* arg)
+ {
+     return qsort_r_helper(base, size, compar, arg, 0, nmemb - 1);
+ }
+@@ -1843,7 +1843,7 @@ void CreateCpuCacheSize(int fd, int cpu, int index)
+     (void)dummy;
+ }
+ 
+-#ifdef ANDROID
++#if 0 /* pz-switch: musl has shm_open */
+ static int shm_open(const char *name, int oflag, mode_t mode) {
+     return -1;
+ }
+@@ -3407,7 +3407,7 @@ EXPORT void my_mcount(void* frompc, void* selfpc)
+ }
+ #endif
+ 
+-#ifndef ANDROID
++#if 1 /* pz-switch: musl has no union semun either */
+ union semun {
+   int              val;    /* Value for SETVAL */
+   struct semid_ds *buf;    /* Buffer for IPC_STAT, IPC_SET */
+diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
+index f40ed957..b3019bb7 100644
+--- a/src/wrapped/wrappedlibc_private.h
++++ b/src/wrapped/wrappedlibc_private.h
+@@ -1,6 +1,35 @@
+ #if !(defined(GO) && defined(GOM) && defined(GO2) && defined(DATA))
+ #error Meh...
+ #endif
++// pz-switch: glibc 2.34+ moved these into libc.so.6; x86 libraries built against it look for them here
++GOM(pthread_attr_destroy, iFEp)
++GO(pthread_attr_init, iFp)
++GO(pthread_attr_setdetachstate, iFpi)
++GO(pthread_attr_setschedparam, iFpp)
++GOM(pthread_attr_setstacksize, iFEpL)
++GO(pthread_condattr_destroy, iFp)
++GO(pthread_condattr_init, iFp)
++GO(pthread_cond_broadcast, iFp)
++GO(pthread_cond_destroy, iFp)
++GO(pthread_cond_init, iFpp)
++GOM(pthread_cond_timedwait, iFEppp)
++GOM(pthread_cond_wait, iFEpp)
++GOM(pthread_create, iFEpppp)
++GO(pthread_join, iFLp)
++GOM(__pthread_key_create, iFEpp)
++GOM(pthread_key_create, iFEpp)
++GO(pthread_mutexattr_destroy, iFp)
++GO(pthread_mutexattr_init, iFp)
++GO(pthread_mutexattr_settype, iFpi)
++GO(pthread_mutex_destroy, iFp)
++GO(pthread_mutex_init, iFpp)
++GOM(pthread_mutex_lock, iFEp)
++GOM(pthread_mutex_trylock, iFEp)
++GOM(pthread_mutex_unlock, iFEp)
++GOM(pthread_once, iFEpp)
++GO(pthread_self, LFv)
++GO(pthread_setschedparam, iFLip)
++GO(pthread_setspecific, iFLp)
+ 
+ GO(a64l, lFp)
+ GO(abort, vFv)
+diff --git a/src/wrapped/wrappedlibpthread_private.h b/src/wrapped/wrappedlibpthread_private.h
+index cdb241c6..fd9fb356 100644
+--- a/src/wrapped/wrappedlibpthread_private.h
++++ b/src/wrapped/wrappedlibpthread_private.h
+@@ -205,14 +205,14 @@ GO(pthread_mutex_init, iFpp)
+ GOM(__pthread_mutex_init, iFpp)
+ GOM(pthread_mutex_init, iFpp)
+ #endif
+-GO(__pthread_mutex_lock, iFp)
+-GO(pthread_mutex_lock, iFp)
++GOM(__pthread_mutex_lock, iFEp)
++GOM(pthread_mutex_lock, iFEp)
+ //GO(pthread_mutex_setprioceiling, 
+-GO(pthread_mutex_timedlock, iFpp)
+-GO(__pthread_mutex_trylock, iFp)
+-GO(pthread_mutex_trylock, iFp)
+-GO(__pthread_mutex_unlock, iFp)
+-GO(pthread_mutex_unlock, iFp)
++GOM(pthread_mutex_timedlock, iFEpp)
++GOM(__pthread_mutex_trylock, iFEp)
++GOM(pthread_mutex_trylock, iFEp)
++GOM(__pthread_mutex_unlock, iFEp)
++GOM(pthread_mutex_unlock, iFEp)
+ GOM(pthread_once, iFEpp)
+ GOM(__pthread_once, iFEpp)
+ GOM(__pthread_register_cancel, vFEp)

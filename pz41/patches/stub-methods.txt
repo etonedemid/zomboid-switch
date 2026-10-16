@@ -1,0 +1,4 @@
+# methods emptied at jar build time (tools/StubMethods.java): "class/name method"
+# OSHI hardware probing needs JNA's native dispatch library
+zombie/gameStates/MainScreenState printSpecs
+zombie/gameStates/MainScreenState loadIcons
