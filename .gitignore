@@ -45,3 +45,5 @@ pz41/deploy.sh
 pz41/newgame.sh
 pz41/run-console.sh
 pz41/xfer.sh
+*.torrent
+*.magnet.txt
