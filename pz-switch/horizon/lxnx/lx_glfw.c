@@ -230,6 +230,7 @@ static PadState pad;
 static int pad_ready;
 static unsigned char gp_buttons[15];
 static float gp_axes[6];
+static unsigned char gp_hat[1];      // the D-pad as joystick hat 0 too, like GLFW (lwjglx reads its POV from it)
 static double mouse_x, mouse_y;
 static int mouse_down;              // touch
 static int pad_buttons[3];          // mouse buttons from the controller (pad->kbm mode)
@@ -266,6 +267,8 @@ static void update_pad(void) {
     gp_axes[2] = r.x / 32767.f; gp_axes[3] = -r.y / 32767.f;
     gp_axes[4] = (b & HidNpadButton_ZL) ? 1.f : -1.f;
     gp_axes[5] = (b & HidNpadButton_ZR) ? 1.f : -1.f;
+    gp_hat[0] = ((b & HidNpadButton_Up) ? 1 : 0) | ((b & HidNpadButton_Right) ? 2 : 0) |   // GLFW_HAT_UP/RIGHT/DOWN/LEFT
+                ((b & HidNpadButton_Down) ? 4 : 0) | ((b & HidNpadButton_Left) ? 8 : 0);
 }
 
 typedef struct { unsigned char buttons[15]; float axes[6]; } GLFWgamepadstate;
@@ -278,7 +281,7 @@ static int glfwJoystickPresent(int jid) { return jid == 0; }
 static int glfwJoystickIsGamepad(int jid) { return jid == 0; }
 static const float *glfwGetJoystickAxes(int jid, int *n) { *n = jid == 0 ? 6 : 0; return gp_axes; }
 static const unsigned char *glfwGetJoystickButtons(int jid, int *n) { *n = jid == 0 ? 15 : 0; return gp_buttons; }
-static const unsigned char *glfwGetJoystickHats(int jid, int *n) { (void)jid; *n = 0; return NULL; }
+static const unsigned char *glfwGetJoystickHats(int jid, int *n) { *n = jid == 0 ? 1 : 0; return gp_hat; }
 static const char *glfwGetJoystickName(int jid) { return jid == 0 ? "Nintendo Switch Controller" : NULL; }
 static const char *glfwGetGamepadName(int jid) { return jid == 0 ? "Nintendo Switch Controller" : NULL; }
 static const char *glfwGetJoystickGUID(int jid) { return jid == 0 ? "030000007e0500000920000000000000" : NULL; }
