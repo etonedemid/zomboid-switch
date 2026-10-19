@@ -1,5 +1,7 @@
 # Project Zomboid build 41 for Nintendo Switch
 
+[Discord](https://discord.gg/dv28MgtaNn)
+
 A native homebrew port of Project Zomboid 41.78. The game's Java code is compiled ahead of time with GraalVM
 native-image, a small Linux layer on libnx runs it, box64 runs the game's x86-64 libraries, and BetterFPS (PotatoePC)
 keeps the loaded map small enough for the console's memory.
