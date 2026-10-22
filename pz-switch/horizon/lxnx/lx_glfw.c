@@ -44,7 +44,7 @@ static struct {
 static int padkbm;   // see pad_kbm()
 static int glfwInit(void) {
     if (inited) return 1;
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+    padConfigureInput(4, HidNpadStyleSet_NpadStandard);   // NPADS
     FILE *pk = fopen(LX_ROOT "/padkbm", "r");
     if (pk) { fclose(pk); padkbm = 1; }
     hidInitializeTouchScreen();
@@ -226,11 +226,12 @@ static u64 glfwGetTimerValue(void) { return armGetSystemTick(); }
 static u64 glfwGetTimerFrequency(void) { return armGetSystemTickFreq(); }
 
 // --- input ---
-static PadState pad;
-static int pad_ready;
-static unsigned char gp_buttons[15];
-static float gp_axes[6];
-static unsigned char gp_hat[1];      // the D-pad as joystick hat 0 too, like GLFW (lwjglx reads its POV from it)
+#define NPADS 4                      // GLFW joysticks 0..3 = controllers 1..4 (split screen); 0 is also the handheld
+static PadState pads[NPADS];
+static int pad_ready, pad_present[NPADS];
+static unsigned char gp_buttons[NPADS][15];
+static float gp_axes[NPADS][6];
+static unsigned char gp_hat[NPADS][1];   // the D-pad as joystick hat 0 too, like GLFW (lwjglx reads its POV from it)
 static double mouse_x, mouse_y;
 static int mouse_btn = -1;          // touch: button held (0 = one finger, 1 = two fingers = right click), -1 none
 static int pad_buttons[3];          // mouse buttons from the controller (pad->kbm mode)
@@ -247,9 +248,11 @@ static void key_update(int k, int scancode, int mods) {
 }
 
 static void update_pad(void) {
-    if (!pad_ready) { padInitializeDefault(&pad); pad_ready = 1; }
-    padUpdate(&pad);
-    u64 b = padGetButtons(&pad);
+    if (!pad_ready) {
+        padInitializeDefault(&pads[0]);   // controller 1 and the handheld controls
+        for (int i = 1; i < NPADS; i++) padInitialize(&pads[i], HidNpadIdType_No1 + i);
+        pad_ready = 1;
+    }
     // GLFW gamepad slots A B X Y by label, Nintendo-style: the button marked A confirms (GLFW A), B goes back. With
     // sdmc:/<app>/padpos, by position instead (Xbox-style: the bottom button, Switch B, is GLFW A).
     static const u64 by_label[15] = { HidNpadButton_A, HidNpadButton_B, HidNpadButton_X, HidNpadButton_Y, HidNpadButton_L,
@@ -261,19 +264,27 @@ static void update_pad(void) {
     static int positional = -1;
     if (positional < 0) { FILE *f = fopen(LX_ROOT "/padpos", "r"); positional = f != NULL; if (f) fclose(f); }
     const u64 *map = positional ? by_position : by_label;
-    for (int i = 0; i < 15; i++) gp_buttons[i] = map[i] && (b & map[i]) ? 1 : 0;
-    HidAnalogStickState l = padGetStickPos(&pad, 0), r = padGetStickPos(&pad, 1);
-    gp_axes[0] = l.x / 32767.f; gp_axes[1] = -l.y / 32767.f;
-    gp_axes[2] = r.x / 32767.f; gp_axes[3] = -r.y / 32767.f;
-    gp_axes[4] = (b & HidNpadButton_ZL) ? 1.f : -1.f;
-    gp_axes[5] = (b & HidNpadButton_ZR) ? 1.f : -1.f;
-    gp_hat[0] = ((b & HidNpadButton_Up) ? 1 : 0) | ((b & HidNpadButton_Right) ? 2 : 0) |   // GLFW_HAT_UP/RIGHT/DOWN/LEFT
-                ((b & HidNpadButton_Down) ? 4 : 0) | ((b & HidNpadButton_Left) ? 8 : 0);
+    for (int i = 0; i < NPADS; i++) {
+        padUpdate(&pads[i]);
+        int was = pad_present[i];
+        pad_present[i] = i == 0 || padIsConnected(&pads[i]);
+        if (was != pad_present[i]) { lx_logf("pad %d %s\n", i + 1, pad_present[i] ? "connected" : "disconnected"); if (cb.joystick) cb.joystick(i, pad_present[i] ? 0x40001 : 0x40002); }
+        u64 pb = pad_present[i] ? padGetButtons(&pads[i]) : 0;
+        for (int k = 0; k < 15; k++) gp_buttons[i][k] = map[k] && (pb & map[k]) ? 1 : 0;
+        HidAnalogStickState l = padGetStickPos(&pads[i], 0), r = padGetStickPos(&pads[i], 1);
+        gp_axes[i][0] = l.x / 32767.f; gp_axes[i][1] = -l.y / 32767.f;
+        gp_axes[i][2] = r.x / 32767.f; gp_axes[i][3] = -r.y / 32767.f;
+        gp_axes[i][4] = (pb & HidNpadButton_ZL) ? 1.f : -1.f;
+        gp_axes[i][5] = (pb & HidNpadButton_ZR) ? 1.f : -1.f;
+        gp_hat[i][0] = ((pb & HidNpadButton_Up) ? 1 : 0) | ((pb & HidNpadButton_Right) ? 2 : 0) |   // GLFW_HAT_UP/RIGHT/DOWN/LEFT
+                       ((pb & HidNpadButton_Down) ? 4 : 0) | ((pb & HidNpadButton_Left) ? 8 : 0);
+    }
+    u64 b = padGetButtons(&pads[0]);
     // Minus + Plus together: on-screen keyboard. Its text replaces the field's: End, Backspaces, then the text, one key
     // per frame (the game takes one key event per frame and drops the rest)
     static u32 kb_text[512]; static int kb_len, kb_pos = -1, kb_back;
     const u64 both = HidNpadButton_Minus | HidNpadButton_Plus;
-    if (kb_pos < 0 && (b & both) == both && (padGetButtonsDown(&pad) & both) && cb.chr) {
+    if (kb_pos < 0 && (b & both) == both && (padGetButtonsDown(&pads[0]) & both) && cb.chr) {
         SwkbdConfig kbd; char out[512] = "";
         if (R_SUCCEEDED(swkbdCreate(&kbd, 0))) {
             swkbdConfigMakePresetDefault(&kbd);
@@ -298,19 +309,25 @@ static void update_pad(void) {
 }
 
 typedef struct { unsigned char buttons[15]; float axes[6]; } GLFWgamepadstate;
+#define JOK(jid) ((jid) >= 0 && (jid) < NPADS && pad_present[jid])
 static int glfwGetGamepadState(int jid, GLFWgamepadstate *s) {
-    if (jid != 0) return 0;
-    memcpy(s->buttons, gp_buttons, 15); memcpy(s->axes, gp_axes, sizeof gp_axes);
+    if (!JOK(jid)) return 0;
+    memcpy(s->buttons, gp_buttons[jid], 15); memcpy(s->axes, gp_axes[jid], sizeof gp_axes[jid]);
     return 1;
 }
-static int glfwJoystickPresent(int jid) { return jid == 0; }
-static int glfwJoystickIsGamepad(int jid) { return jid == 0; }
-static const float *glfwGetJoystickAxes(int jid, int *n) { *n = jid == 0 ? 6 : 0; return gp_axes; }
-static const unsigned char *glfwGetJoystickButtons(int jid, int *n) { *n = jid == 0 ? 15 : 0; return gp_buttons; }
-static const unsigned char *glfwGetJoystickHats(int jid, int *n) { *n = jid == 0 ? 1 : 0; return gp_hat; }
-static const char *glfwGetJoystickName(int jid) { return jid == 0 ? "Nintendo Switch Controller" : NULL; }
-static const char *glfwGetGamepadName(int jid) { return jid == 0 ? "Nintendo Switch Controller" : NULL; }
-static const char *glfwGetJoystickGUID(int jid) { return jid == 0 ? "030000007e0500000920000000000000" : NULL; }
+static int glfwJoystickPresent(int jid) { return JOK(jid); }
+static int glfwJoystickIsGamepad(int jid) { return JOK(jid); }
+static const float *glfwGetJoystickAxes(int jid, int *n) { *n = JOK(jid) ? 6 : 0; return JOK(jid) ? gp_axes[jid] : NULL; }
+static const unsigned char *glfwGetJoystickButtons(int jid, int *n) { *n = JOK(jid) ? 15 : 0; return JOK(jid) ? gp_buttons[jid] : NULL; }
+static const unsigned char *glfwGetJoystickHats(int jid, int *n) { *n = JOK(jid) ? 1 : 0; return JOK(jid) ? gp_hat[jid] : NULL; }
+static const char *glfwGetJoystickName(int jid) { return JOK(jid) ? "Nintendo Switch Controller" : NULL; }
+static const char *glfwGetGamepadName(int jid) { return JOK(jid) ? "Nintendo Switch Controller" : NULL; }
+// the GUID differs per slot so the game keeps each player's bindings apart
+static const char *glfwGetJoystickGUID(int jid) {
+    static const char *g[NPADS] = { "030000007e0500000920000000000000", "030000007e0500000920000000000001",
+                                    "030000007e0500000920000000000002", "030000007e0500000920000000000003" };
+    return JOK(jid) ? g[jid] : NULL;
+}
 static int glfwUpdateGamepadMappings(const char *s) { (void)s; return 1; }
 
 // USB keyboard: HID usage -> GLFW key
@@ -365,8 +382,8 @@ static void pad_kbm(void) {
     double dt = last_tick ? armTicksToNs(now - last_tick) / 1e9 : 0;
     if (dt > 0.1) dt = 0.1;
     last_tick = now;
-    u64 b = padGetButtons(&pad), down = padGetButtonsDown(&pad);
-    HidAnalogStickState l = padGetStickPos(&pad, 0), r = padGetStickPos(&pad, 1);
+    u64 b = padGetButtons(&pads[0]), down = padGetButtonsDown(&pads[0]);
+    HidAnalogStickState l = padGetStickPos(&pads[0], 0), r = padGetStickPos(&pads[0], 1);
     double lx = l.x / 32767.0, ly = l.y / 32767.0, rx = r.x / 32767.0, ry = r.y / 32767.0;
     int ingame = cursor_mode == GLFW_CURSOR_DISABLED;
     if (ingame) {
