@@ -13,6 +13,14 @@ No game files are in this repository. You need your own copy of Project Zomboid.
 ![Survival guide](docs/guide.jpg)
 ![In game](docs/ingame.jpg)
 
+## Support
+
+If you'd like to support development:
+
+- USDT (TRC20): `TCJ4HMJF3JHQG66khYTj98Em7v74j3cry9`
+- Bitcoin: `bc1qaeypp2m5h74alrmhyu4zvzf3yyf58k6mcw7868`
+- Monero: `45npN9u6zMFE7xMxfszfWBX2jdDdtZaogcGex4s5D7QDNsGPtbXjtjtXpbx9cnxLaKXC1KzGgckN2fMwrYrw5yqPTG2KiPj`
+
 ## Building
 
 Linux x86-64 host with:
@@ -73,11 +81,3 @@ Recommended `options.ini` settings: `texture2x=false`, `maxVehicleTextureSize=1`
 [zomdroid](https://github.com/liamelui/zomdroid) for the box64 JNI bridge design and its box64 fork,
 [BetterFPS](https://steamcommunity.com/sharedfiles/filedetails/?id=3022543997), LWJGL, musl, GraalVM, devkitPro.
 Project Zomboid is by The Indie Stone.
-
-## Support
-
-If you'd like to support development:
-
-- USDT (TRC20): `TCJ4HMJF3JHQG66khYTj98Em7v74j3cry9`
-- Bitcoin: `bc1qaeypp2m5h74alrmhyu4zvzf3yyf58k6mcw7868`
-- Monero: `45npN9u6zMFE7xMxfszfWBX2jdDdtZaogcGex4s5D7QDNsGPtbXjtjtXpbx9cnxLaKXC1KzGgckN2fMwrYrw5yqPTG2KiPj`
