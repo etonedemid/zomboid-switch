@@ -96,6 +96,7 @@ struct lx_timespec { int64_t tv_sec, tv_nsec; };
 extern FILE *lx_log;
 void lx_logf(const char *fmt, ...);
 void lx_log_write(const void *buf, size_t n);
+void lx_log_flush(void);
 _Noreturn void lx_fatal(const char *fmt, ...);
 
 long lx_sys_mem(long n, long a, long b, long c, long d, long e, long f, int *handled);

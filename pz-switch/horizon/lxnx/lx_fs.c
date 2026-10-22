@@ -484,6 +484,20 @@ static long do_stat(long dirfd, const char *p, struct lx_stat *o, int flags) {
     return 0;
 }
 
+// statx through do_stat: the JDK's NIO (Files.exists, newDirectoryStream filters) calls it directly
+static long do_statx(long dirfd, const char *p, int flags, uint8_t *o) {
+    struct lx_stat st;
+    long rc = do_stat(dirfd, p, &st, flags);
+    if (rc) return rc;
+    memset(o, 0, 256);
+    struct { uint32_t mask, blksize; uint64_t attributes; uint32_t nlink, uid, gid; uint16_t mode, pad; uint64_t ino, size, blocks, attributes_mask;
+             struct { int64_t sec; uint32_t nsec; int32_t pad; } atime, btime, ctime, mtime; } x = {
+        0x7ff, st.st_blksize, 0, st.st_nlink, st.st_uid, st.st_gid, st.st_mode, 0, st.st_ino, st.st_size, st.st_blocks, 0,
+        { st.st_atime_sec, st.st_atime_nsec, 0 }, { 0, 0, 0 }, { st.st_ctime_sec, st.st_ctime_nsec, 0 }, { st.st_mtime_sec, st.st_mtime_nsec, 0 } };
+    memcpy(o, &x, sizeof x);   // STATX_BASIC_STATS; dev/rdev left 0
+    return 0;
+}
+
 static long path_op(long n, long dirfd, const char *p, long a2, long a3, long a4) {
     char lp[1024], hp[1100], lp2[1024], hp2[1100];
     int rc = resolve(dirfd, p, lp, sizeof lp);
@@ -565,7 +579,7 @@ long lx_sys_fs(long n, long a, long b, long c, long d, long e, long f, int *hand
     case LX_getdents64: return do_getdents(a, (uint8_t *)b, c);
     case LX_fstat: return do_stat(a, "", (struct lx_stat *)b, LX_AT_EMPTY_PATH);
     case LX_newfstatat: return do_stat(a, (const char *)b, (struct lx_stat *)c, d);
-    case LX_statx: return -LX_ENOSYS;
+    case LX_statx: return do_statx(a, (const char *)b, c, (uint8_t *)e);
     case LX_fchown: case LX_fchownat: return 0;   // one user   // musl falls back to fstatat
     case LX_ftruncate: { Fd *fp = get(a); return fp && fp->kind == FD_FILE ? (ftruncate(fp->nfd, b) ? lx_err() : 0) : -LX_EBADF; }
     case LX_fsync: case LX_fdatasync: { Fd *fp = get(a); if (fp && fp->kind == FD_FILE) fsync(fp->nfd); return 0; }
@@ -644,6 +658,17 @@ long lx_sys_fs(long n, long a, long b, long c, long d, long e, long f, int *hand
         ((int *)a)[0] = r; ((int *)a)[1] = w;
         return 0;
     }
+    // inotify: Java's WatchService (the game's DebugFileWatcher) needs one to exist; it never reports a change
+    case 26: {   // inotify_init1
+        int fd = alloc_fd(FD_EVENT);
+        if (fd < 0) return fd;
+        fds[fd].po = pobj_new(); fds[fd].flags = a & LX_O_NONBLOCK;   // IN_NONBLOCK == O_NONBLOCK
+        return fd;
+    }
+    case 27: { static int wd; return ++wd; }   // inotify_add_watch
+    case 28: return 0;                          // inotify_rm_watch
+    case 199: return lx_sys_fs(LX_pipe2, d, b & LX_O_NONBLOCK, 0, 0, 0, 0, handled);   // socketpair: WatchService's wakeup
+                                                                                        // channel only needs sv[1] -> sv[0]
     case LX_eventfd2: {
         int fd = alloc_fd(FD_EVENT);
         if (fd < 0) return fd;

@@ -15,17 +15,33 @@ FILE *lx_log;
 uintptr_t lx_main_stack_lo, lx_main_stack_hi;
 static Mutex log_lock;
 
-// The log is reopened for every write so the debug service can read it while we run (an open file is locked).
-// ponytail: one open/close per line; keep a FILE open again once debugging moves past boot.
-void lx_log_write(const void *buf, size_t n) {
-    if (!lx_log) return;
-    // never block for long: a thread that dies or overflows its stack while logging would otherwise freeze every
-    // logger, the watchdog and its hang detector included (seen with Minecraft's server thread)
-    int got = 0;
-    for (int i = 0; i < 200 && !(got = mutexTryLock(&log_lock)); i++) svcSleepThread(1000000);
-    if (!got) return;
+// Lines collect in memory and go to the file in one open/append/close (the debug service can read it while we run: an
+// open file is locked). The watchdog flushes every 100 ms and before it traps, the fatal paths flush; a hard crash
+// loses at most the last 100 ms. Opening the file per line cost ~6 ms a line, a third of startup with chatty mods.
+static char log_buf[64 << 10];
+static size_t log_len;
+static void log_flush_locked(void) {
+    if (!log_len) return;
     FILE *f = fopen(LX_ROOT "/lx.log", "ab");
-    if (f) { fwrite(buf, 1, n, f); fclose(f); }
+    if (f) { fwrite(log_buf, 1, log_len, f); fclose(f); }
+    log_len = 0;
+}
+// never block for long: a thread that dies or overflows its stack while logging would otherwise freeze every logger,
+// the watchdog and its hang detector included (seen with Minecraft's server thread)
+static int log_lock_try(void) {
+    for (int i = 0; i < 200; i++) { if (mutexTryLock(&log_lock)) return 1; svcSleepThread(1000000); }
+    return 0;
+}
+void lx_log_flush(void) {
+    if (!lx_log || !log_lock_try()) return;
+    log_flush_locked();
+    mutexUnlock(&log_lock);
+}
+void lx_log_write(const void *buf, size_t n) {
+    if (!lx_log || !log_lock_try()) return;
+    if (log_len + n > sizeof log_buf) log_flush_locked();
+    if (n > sizeof log_buf) { FILE *f = fopen(LX_ROOT "/lx.log", "ab"); if (f) { fwrite(buf, 1, n, f); fclose(f); } }
+    else { memcpy(log_buf + log_len, buf, n); log_len += n; }
     mutexUnlock(&log_lock);
 }
 
@@ -45,6 +61,7 @@ _Noreturn void lx_fatal(const char *fmt, ...) {
     vsnprintf(line, sizeof line, fmt, ap);
     lx_log_write("FATAL: ", 7); lx_log_write(line, strlen(line));
     va_end(ap);
+    lx_log_flush();
     exit(1);
 }
 
@@ -52,6 +69,7 @@ extern char __start__[];
 // newlib's abort() (Mesa asserts, libstdc++) quits silently; log who called it, then trap for a crash report with a stack
 _Noreturn void abort(void) {
     lx_logf("abort() from pz+%#lx\n", (uintptr_t)__builtin_return_address(0) - (uintptr_t)__start__);
+    lx_log_flush();
     __builtin_trap();
 }
 
@@ -60,6 +78,7 @@ _Noreturn void abort(void) {
 // Atmosphere writes a report with every thread's stack.
 static _Noreturn void app_fatal(const char *what, Result rc, void *caller) {
     lx_logf("%s(%#x = %u-%04u) from pz+%#lx\n", what, rc, 2000 + R_MODULE(rc), R_DESCRIPTION(rc), (uintptr_t)caller - (uintptr_t)__start__);
+    lx_log_flush();
     svcBreak(BreakReason_Panic, 0, 0);
     for (;;) svcSleepThread(1000000000ll);
 }
@@ -106,8 +125,18 @@ extern volatile int lx_gl_armed;
 // it once, hang detector included. It breaks first; the statistics line lives in its own thread (statlog).
 static void watchdog(void *arg) {
     (void)arg;
+    u64 prev = armGetSystemTick();
     for (int n = 0;; n++) {
         svcSleepThread(100000000ll);
+        lx_log_flush();
+        // The system tick keeps running while the console sleeps (or we sit suspended behind the HOME menu), and all
+        // our threads stop. Back from that, the time since the last frame says nothing: start counting again.
+        u64 now = armGetSystemTick();
+        if ((s64)(now - prev) > (s64)armNsToTicks(2000000000ull)) {
+            if (lx_last_swap) lx_last_swap = now;
+            lx_gl_last_tick = now;
+        }
+        prev = now;
         if (lx_gl_armed && (s64)(armGetSystemTick() - lx_gl_last_tick) > (s64)armNsToTicks(400000000ull))
             svcBreak(BreakReason_Panic, 0, 0);   // debug trap armed by the GL tracer
         if (lx_last_swap && (s64)(armGetSystemTick() - lx_last_swap) > (s64)armNsToTicks(30000000000ull))

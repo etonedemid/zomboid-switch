@@ -232,7 +232,7 @@ static unsigned char gp_buttons[15];
 static float gp_axes[6];
 static unsigned char gp_hat[1];      // the D-pad as joystick hat 0 too, like GLFW (lwjglx reads its POV from it)
 static double mouse_x, mouse_y;
-static int mouse_down;              // touch
+static int mouse_btn = -1;          // touch: button held (0 = one finger, 1 = two fingers = right click), -1 none
 static int pad_buttons[3];          // mouse buttons from the controller (pad->kbm mode)
 static int cursor_mode = GLFW_CURSOR_NORMAL;
 static int padkbm;                  // controller as keyboard + mouse (sdmc:/<app>/padkbm), for games without pad support
@@ -269,6 +269,32 @@ static void update_pad(void) {
     gp_axes[5] = (b & HidNpadButton_ZR) ? 1.f : -1.f;
     gp_hat[0] = ((b & HidNpadButton_Up) ? 1 : 0) | ((b & HidNpadButton_Right) ? 2 : 0) |   // GLFW_HAT_UP/RIGHT/DOWN/LEFT
                 ((b & HidNpadButton_Down) ? 4 : 0) | ((b & HidNpadButton_Left) ? 8 : 0);
+    // Minus + Plus together: on-screen keyboard. Its text replaces the field's: End, Backspaces, then the text, one key
+    // per frame (the game takes one key event per frame and drops the rest)
+    static u32 kb_text[512]; static int kb_len, kb_pos = -1, kb_back;
+    const u64 both = HidNpadButton_Minus | HidNpadButton_Plus;
+    if (kb_pos < 0 && (b & both) == both && (padGetButtonsDown(&pad) & both) && cb.chr) {
+        SwkbdConfig kbd; char out[512] = "";
+        if (R_SUCCEEDED(swkbdCreate(&kbd, 0))) {
+            swkbdConfigMakePresetDefault(&kbd);
+            if (R_SUCCEEDED(swkbdShow(&kbd, out, sizeof out))) {
+                kb_len = 0;
+                for (const unsigned char *p = (const unsigned char *)out; *p && kb_len < 512;) {   // UTF-8 -> code points
+                    u32 c; ssize_t n = decode_utf8(&c, p);
+                    if (n <= 0) break;
+                    kb_text[kb_len++] = c; p += n;
+                }
+                kb_pos = 0; kb_back = 0;
+            }
+            swkbdClose(&kbd);
+        }
+    } else if (kb_pos >= 0) {
+        if (kb_back <= 64) {   // End, then 64 Backspaces
+            int k = kb_back++ ? 259 : 269;   // GLFW_KEY_BACKSPACE, GLFW_KEY_END
+            pad_keys[k] = 1; key_update(k, 0, 0); pad_keys[k] = 0; key_update(k, 0, 0);
+        } else if (kb_pos < kb_len) cb.chr(&win, kb_text[kb_pos++]);
+        else kb_pos = -1;
+    }
 }
 
 typedef struct { unsigned char buttons[15]; float axes[6]; } GLFWgamepadstate;
@@ -382,15 +408,19 @@ static void glfwPollEvents(void) {
     if (!appletMainLoop()) { win.should_close = 1; if (cb.close) cb.close(&win); }
     update_pad();
     if (padkbm) pad_kbm();
-    // touchscreen -> mouse (left button while touching)
+    // touchscreen -> mouse: one finger = left button, two fingers = right button
     HidTouchScreenState ts;
     if (hidGetTouchScreenStates(&ts, 1)) {
-        int down = ts.count > 0;
-        if (down) {
+        int want = ts.count >= 2 ? 1 : ts.count - 1;
+        if (ts.count) {
             double x = ts.touches[0].x * W / 1280.0, y = ts.touches[0].y * H / 720.0;
             if (x != mouse_x || y != mouse_y) { mouse_x = x; mouse_y = y; if (cb.cursor) cb.cursor(&win, x, y); }
         }
-        if (down != mouse_down) { mouse_down = down; if (cb.button) cb.button(&win, 0, down, 0); }
+        if (want != mouse_btn) {
+            if (mouse_btn >= 0 && cb.button) cb.button(&win, mouse_btn, 0, 0);
+            mouse_btn = want;
+            if (want >= 0 && cb.button) cb.button(&win, want, 1, 0);
+        }
     }
     // keyboard
     HidKeyboardState ks;
@@ -412,7 +442,7 @@ static void glfwWaitEvents(void) { glfwPollEvents(); }
 static void glfwWaitEventsTimeout(double t) { (void)t; glfwPollEvents(); }
 static void glfwPostEmptyEvent(void) {}
 static int glfwGetKey(Win *w, int k) { (void)w; return k >= 0 && k < 512 ? keys[k] : 0; }
-static int glfwGetMouseButton(Win *w, int b) { (void)w; return b >= 0 && b < 3 ? (b == 0 && mouse_down) || pad_buttons[b] : 0; }
+static int glfwGetMouseButton(Win *w, int b) { (void)w; return b >= 0 && b < 3 ? b == mouse_btn || pad_buttons[b] : 0; }
 static void glfwGetCursorPos(Win *w, double *x, double *y) { (void)w; if (x) *x = mouse_x; if (y) *y = mouse_y; }
 static void glfwSetCursorPos(Win *w, double x, double y) { (void)w; mouse_x = x; mouse_y = y; }
 static int glfwGetInputMode(Win *w, int m) { (void)w; return m == GLFW_CURSOR ? cursor_mode : 0; }
