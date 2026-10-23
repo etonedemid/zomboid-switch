@@ -139,8 +139,8 @@ static void watchdog(void *arg) {
         prev = now;
         if (lx_gl_armed && (s64)(armGetSystemTick() - lx_gl_last_tick) > (s64)armNsToTicks(400000000ull))
             svcBreak(BreakReason_Panic, 0, 0);   // debug trap armed by the GL tracer
-        if (lx_last_swap && (s64)(armGetSystemTick() - lx_last_swap) > (s64)armNsToTicks(30000000000ull))
-            svcBreak(BreakReason_Panic, 0, 0);   // no frame for 30 s: crash report with every thread's stack
+        if (lx_last_swap && (s64)(armGetSystemTick() - lx_last_swap) > (s64)armNsToTicks(180000000000ull))
+            svcBreak(BreakReason_Panic, 0, 0);   // no frame for 3 min: crash report with every thread's stack (loading mods on a slow SD card can take over 30 s without one)
         struct stat st;
         if (n % 20 == 0 && stat(LX_ROOT "/crashnow", &st) == 0) { unlink(LX_ROOT "/crashnow"); svcBreak(BreakReason_Panic, 0, 0); }
     }

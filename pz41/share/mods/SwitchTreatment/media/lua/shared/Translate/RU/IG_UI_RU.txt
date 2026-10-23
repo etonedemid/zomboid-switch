@@ -1,0 +1,3 @@
+IG_UI_RU = {
+    IGUI_SwT_Needs = "нужно: %1",
+}

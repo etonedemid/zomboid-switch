@@ -2,7 +2,7 @@ game/
 tools/DepotDownloader
 tools/*.jqh
 tools/LICENSE
-mods/
+/mods/
 jar/
 pz41.jar
 build*/

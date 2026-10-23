@@ -1,0 +1,3 @@
+name=Treatment Menu (always opens)
+id=SwitchTreatment
+description=The body-part treatment menu always opens: treatments the injury needs but you have no item for are listed greyed out with what they need. A tap on a body part opens it too, also while paused. Build 41.

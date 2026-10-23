@@ -428,11 +428,32 @@ static void glfwPollEvents(void) {
     // touchscreen -> mouse: one finger = left button, two fingers = right button
     HidTouchScreenState ts;
     if (hidGetTouchScreenStates(&ts, 1)) {
-        int want = ts.count >= 2 ? 1 : ts.count - 1;
-        if (ts.count) {
+        // A two-finger gesture stays the right button until every finger is up: lifting one finger first must not turn the
+        // other into a left click (it dismissed the menu the right click had just opened) or move the cursor off the
+        // row that was tapped.
+        // Holding one finger still for a second is a right click too (it takes over from the left button and keeps the
+        // cursor where it was, like the two-finger gesture).
+        static int multi, held, moved;
+        static u64 t0; static int x0, y0;
+        if (ts.count >= 2) multi = 1;
+        if (ts.count == 0) multi = held = moved = 0;
+        else if (ts.count == 1 && !t0) { t0 = armGetSystemTick(); x0 = ts.touches[0].x; y0 = ts.touches[0].y; }
+        if (ts.count == 0) t0 = 0;
+        else if (!multi && !held && !moved) {
+            int dx = (int)ts.touches[0].x - x0, dy = (int)ts.touches[0].y - y0;
+            if (dx * dx + dy * dy > 20 * 20) moved = 1;
+            else if (armTicksToNs(armGetSystemTick() - t0) >= 1000000000ull) held = 1;
+        }
+        int want = ts.count >= 2 || held ? 1 : multi ? -1 : ts.count - 1;
+        if (ts.count && !multi && !held) {
             double x = ts.touches[0].x * W / 1280.0, y = ts.touches[0].y * H / 720.0;
             if (x != mouse_x || y != mouse_y) { mouse_x = x; mouse_y = y; if (cb.cursor) cb.cursor(&win, x, y); }
         }
+        // The cursor moves at once but button changes are 3 polls late: the game's popup menus only take a click on the
+        // item that was already highlighted, and a click in the same frame as the move needed a second tap.
+        static int hist[4] = { -1, -1, -1, -1 };
+        memmove(hist, hist + 1, 3 * sizeof hist[0]); hist[3] = want;
+        want = hist[0];
         if (want != mouse_btn) {
             if (mouse_btn >= 0 && cb.button) cb.button(&win, mouse_btn, 0, 0);
             mouse_btn = want;
