@@ -35,7 +35,7 @@ Linux x86-64 host with:
 Game files (DepotDownloader, Linux depot of build 41.78, and the BetterFPS workshop item):
 
 ```
-DepotDownloader -app 108600 -depot 108603 -manifest 8887512142279836582 -username YOU -dir pz41/game
+DepotDownloader -app 108600 -depot 108603 -manifest 8887512142279836582 -beta legacy41 -username YOU -dir pz41/game
 DepotDownloader -app 108600 -pubfile 3022543997 -username YOU -dir pz41/mods/betterfps
 mkdir -p pz41/mods/betterfps/classes/zombie/iso
 cp pz41/mods/betterfps/mods/BetterFPS/media/PotatoePC/zombie/iso/IsoChunkMap.class pz41/mods/betterfps/classes/zombie/iso/
