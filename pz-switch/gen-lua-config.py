@@ -8,7 +8,7 @@ jar = ex(os.environ.get('JAR', '$PZROOT/pz-switch/pz.jar'))
 out_json = ex(os.environ.get('OUT', '$PZROOT/pz-switch/config-lua') + '/reachability-metadata.json')
 javap = ex('$GRAALVM/bin/javap')
 out = subprocess.run([javap, '-p', '-c', '-cp', jar, 'zombie.Lua.LuaManager$Exposer'], capture_output=True, text=True).stdout
-names = {m.replace('/', '.') for m in re.findall(r'ldc\s+#\d+\s+// class (\S+)', out)}
+names = {m.replace('/', '.') for m in re.findall(r'ldc(?:_w)?\s+#\d+\s+// class (\S+)', out)}
 for n in zipfile.ZipFile(jar).namelist():
     if n.endswith('.class') and n.startswith(('zombie/', 'se/krka/')) and 'module-info' not in n:
         names.add(n[:-6].replace('/', '.'))

@@ -73,6 +73,16 @@
    "allDeclaredConstructors": true
   },
   {
+   "type": "java.lang.Class",
+   "allPublicMethods": true,
+   "allPublicFields": true,
+   "allPublicConstructors": true,
+   "allDeclaredMethods": true,
+   "allDeclaredFields": true,
+   "allDeclaredConstructors": true,
+   "jniAccessible": true
+  },
+  {
    "type": "java.lang.Double",
    "allPublicMethods": true,
    "allPublicFields": true,
@@ -123,6 +133,24 @@
   },
   {
    "type": "java.lang.Void",
+   "allPublicMethods": true,
+   "allPublicFields": true,
+   "allPublicConstructors": true,
+   "allDeclaredMethods": true,
+   "allDeclaredFields": true,
+   "allDeclaredConstructors": true
+  },
+  {
+   "type": "java.lang.reflect.Field",
+   "allPublicMethods": true,
+   "allPublicFields": true,
+   "allPublicConstructors": true,
+   "allDeclaredMethods": true,
+   "allDeclaredFields": true,
+   "allDeclaredConstructors": true
+  },
+  {
+   "type": "java.lang.reflect.Method",
    "allPublicMethods": true,
    "allPublicFields": true,
    "allPublicConstructors": true,
@@ -215,6 +243,15 @@
   },
   {
    "type": "org.joml.Vector3f",
+   "allPublicMethods": true,
+   "allPublicFields": true,
+   "allPublicConstructors": true,
+   "allDeclaredMethods": true,
+   "allDeclaredFields": true,
+   "allDeclaredConstructors": true
+  },
+  {
+   "type": "org.lwjglx.input.Keyboard",
    "allPublicMethods": true,
    "allPublicFields": true,
    "allPublicConstructors": true,
@@ -28106,6 +28143,9 @@
    "type": "java.io.DataOutputStream[]"
   },
   {
+   "type": "java.lang.Class[]"
+  },
+  {
    "type": "java.lang.Double[]"
   },
   {
@@ -28122,6 +28162,12 @@
   },
   {
    "type": "java.lang.Void[]"
+  },
+  {
+   "type": "java.lang.reflect.Field[]"
+  },
+  {
+   "type": "java.lang.reflect.Method[]"
   },
   {
    "type": "java.text.SimpleDateFormat[]"
@@ -28152,6 +28198,9 @@
   },
   {
    "type": "org.joml.Vector3f[]"
+  },
+  {
+   "type": "org.lwjglx.input.Keyboard[]"
   },
   {
    "type": "se.krka.kahlua.Version[]"
@@ -37567,13 +37616,6 @@
   },
   {
    "type": "java.lang.Boolean",
-   "jniAccessible": true,
-   "allDeclaredMethods": true,
-   "allDeclaredFields": true,
-   "allDeclaredConstructors": true
-  },
-  {
-   "type": "java.lang.Class",
    "jniAccessible": true,
    "allDeclaredMethods": true,
    "allDeclaredFields": true,
