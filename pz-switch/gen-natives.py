@@ -83,7 +83,10 @@ for data, only in classes():
         sigs.setdefault(base, desc)
         args = desc[1:desc.index(')')]
         sigs[base + '__' + mangle(args)] = desc   # overloads share the short name: the long name picks the right one
-        for sym in (base, base + '__' + mangle(args)):
+        overloaded = sum(n == name for n, _ in ms) > 1
+        # no stub under an overloaded method's short name: the JVM looks that name up first, and the stub would win
+        # over the emulated library's long-named exports (MapCollisionData.n_setGameState never reached libPZPopMan)
+        for sym in ((base + '__' + mangle(args),) if overloaded else (base, base + '__' + mangle(args))):
             if sym not in real: stubs[sym] = cls.replace('/', '.') + '.' + name
 
 os.makedirs(out, exist_ok=True)
