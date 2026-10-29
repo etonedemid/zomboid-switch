@@ -128,7 +128,11 @@ void *lx_x86_dlsym(void *h, const char *name)
 	snprintf(shortname, sizeof shortname, "%s", name);
 	char *dd = strstr(shortname + 5, "__");  /* long form: strip the mangled signature */
 	if (dd) *dd = 0;
-	const struct jni_sig *s = bsearch(shortname, lx_jni_sigs, lx_jni_sigs_len, sizeof *lx_jni_sigs, sigcmp);
+	/* the long name first: overloads (MapCollisionData.n_setGameState) share the short name, and the (String, boolean)
+	 * descriptor on the (String, String) overload cut the second string to a byte - the population manager never got
+	 * the save folder and kept zpop_*.bin of every save in one place */
+	const struct jni_sig *s = bsearch(name, lx_jni_sigs, lx_jni_sigs_len, sizeof *lx_jni_sigs, sigcmp);
+	if (!s) s = bsearch(shortname, lx_jni_sigs, lx_jni_sigs_len, sizeof *lx_jni_sigs, sigcmp);
 	if (!s) return NULL;
 	pthread_mutex_lock(&lock);
 	uintptr_t fn = FindGlobalSymbol(GetMaplib(h), shortname, -1, NULL, 0);

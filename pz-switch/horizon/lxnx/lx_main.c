@@ -200,6 +200,21 @@ int main(int argc, char **argv) {
         char p[256]; snprintf(p, sizeof p, LX_ROOT "/%s", jdk[k]);
         FILE *pf = fopen(p, "ab"); if (pf) fclose(pf);
     }
+    // No options.ini yet (installs that skipped the one in the zip): start from the low-memory settings. The game's own
+    // defaults (2x textures, full-size vehicle and clothing textures) run the console out of memory and freeze long games.
+    mkdir(LX_ROOT "/zomboid", 0777);
+    if (access(LX_ROOT "/zomboid/options.ini", F_OK)) {
+        FILE *of = fopen(LX_ROOT "/zomboid/options.ini", "w");
+        if (of) {
+            fputs("version=7\r\nwidth=1280\r\nheight=720\r\nfullScreen=false\r\nvsync=false\r\nframeRate=60\r\n"
+                  "water=0\r\npuddles=0\r\nlighting=0\r\nlightFPS=15\r\nperfPuddles=0\r\nfogQuality=0\r\n"
+                  "textureCompression=true\r\nmodelTextureMipmaps=false\r\ntexture2x=false\r\nmaxTextureSize=1\r\n"
+                  "maxVehicleTextureSize=1\r\nsimpleClothingTextures=2\r\nsimpleWeaponTextures=true\r\n"
+                  "zoomLevels1x=50;75;125;150;175;200\r\nzoomLevels2x=50;75;125;150;175;200\r\n", of);
+            fclose(of);
+            lx_logf("wrote low-memory options.ini\n");
+        }
+    }
 
     // arguments: one per line from args.txt (argv[0] included)
     static char *args[256];

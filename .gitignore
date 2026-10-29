@@ -47,3 +47,4 @@ pz41/run-console.sh
 pz41/xfer.sh
 *.torrent
 *.magnet.txt
+tools-local/

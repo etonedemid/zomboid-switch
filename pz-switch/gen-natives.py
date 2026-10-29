@@ -82,6 +82,7 @@ for data, only in classes():
         base = 'Java_' + mangle(cls) + '_' + mangle(name)
         sigs.setdefault(base, desc)
         args = desc[1:desc.index(')')]
+        sigs[base + '__' + mangle(args)] = desc   # overloads share the short name: the long name picks the right one
         for sym in (base, base + '__' + mangle(args)):
             if sym not in real: stubs[sym] = cls.replace('/', '.') + '.' + name
 
