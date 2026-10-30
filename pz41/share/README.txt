@@ -6,7 +6,7 @@ You need: a Switch running Atmosphere homebrew, ~8 GB free on the SD card, and P
 1. Get the Linux build 41.78 game files (works from Windows, Linux or macOS):
    download DepotDownloader (github.com/SteamRE/DepotDownloader/releases) and run
 
-     DepotDownloader -app 108600 -depot 108603 -manifest 8887512142279836582 -username YOUR_STEAM_NAME -dir pzdepot
+     DepotDownloader -app 108600 -depot 108603 -manifest 8887512142279836582 -beta legacy41 -username YOUR_STEAM_NAME -dir pzdepot
 
    It asks for your password / Steam Guard (or add -qr to log in with the Steam app). 6.8 GB.
 
